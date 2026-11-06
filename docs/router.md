@@ -175,3 +175,42 @@ on a 32 GB host (a 131,072-token context frees 4.6 GB); prompts over 31 tokens
 always go to the GPU, so even a short one makes the card return its 12.9 GB (a
 38-token prompt prefilled at 1.89 tok/s before the pool copy); generation is
 bound by the card reading its 12.9 GB share per token.
+
+### Router v2: the stream at the card link's ceiling
+
+Traced on the inverted layout (card counters sampled every 50 ms from the window,
+`OFF_CDMA_STATS`), a 1395-token prefill with router v1 streamed the card's rows at
+1.44-1.52 GB/s, 45 % of the card's 3.32 GB/s, with the GPU 33-43 % busy: v1's one
+thread waited for each `K_DOWNLOAD`, then did the `UFFDIO_COPY` while the card sat
+idle, and read ahead only inside a matrix, so every matrix began with a stall. v2
+gives each job its own thread (fault, fetch, fill), four staging slots, and a
+read-ahead that crosses into the next matrix by the order learned on the first
+prompt ([tools/tridma_router.md](../tools/tridma_router.md)). Same prompt:
+
+| | v1 | v2, first prompt | v2, after it |
+|---|---|---|---|
+| stream | 1.44-1.52 GB/s | 2.17-2.38 GB/s | 3.24-3.31 GB/s |
+| prefill | 111.33 tok/s | 143.3-144.4 tok/s | **181.32-183.47 tok/s** (7.63 s) |
+
+`TRIDMA_VERIFY=1`: 3,286 of 3,286 chunks equal to the GGUF. The card's link is PCIe
+Gen2 x8 (sysfs: 5.0 GT/s x8, the slot x16 capable), 4 GB/s raw: v2 is at what it
+carries, so the next prefill gain is not more channels but fewer bytes per batch
+(prompts up to 31 tokens stay on the card; a longer prompt pays 13.2 GB / 3.3 GB/s
+= 4.0 s once per 2048-token batch).
+
+### Where generation's time goes (the inverted layout, 2026-11-06)
+
+Every card reply traced with its host timestamp (`OFF_STATS` polled in a spin, a
+24-token reply, 1720 requests at 120 threads in 4216 ms):
+
+| Per verify pass (about 527 ms) | ms | Share |
+|---|---|---|
+| the card computing layers 0-31 (215 requests) | about 272 | 52 % |
+| host work between the card's layers (attention and recurrent state on the host, about 1.7 ms after each layer) | about 55 | 10 % |
+| the MTP draft on the host (gaps of 9, 21, 21, 21 ms) | about 72 | 14 % |
+| the GPU's 32 layers with their attention on the host (one gap) | 105-146 | 23 % |
+| of it, data in and out of the card (pull + push) | 160 ms of 4216 in total | 3.8 % |
+
+Generation is not bound by the routing: the card's matrix kernels move its 12.9 GB
+share at about 47 GB/s against the 165-180 GB/s its memory streams, and the devices
+run one after another for a single sequence.
