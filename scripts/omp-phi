@@ -1,0 +1,25 @@
+#!/bin/sh
+# omp-phi -- the omp agent on the llama-phi profile (~/.omp/profiles/llama-phi/agent): every
+# model role is Qwen3.8-35B-A3B Q8_0 from the desktop's llama-server on 127.0.0.1:8095
+# (3090 Ti + Xeon Phi 7120A, ~/llama-phi-cuda). The main `omp` and its Strata gate are
+# untouched.
+#
+# Fail closed, like strata-tunnel-gate: a session starts only when 127.0.0.1:8095 is held by
+# a llama-server process of this user, so prompts never go to whatever else holds the port.
+# --version, -v, --help, -h contact no model and skip the check.
+
+OMP_BIN="$HOME/.local/lib/omp/omp"
+PORT=8095
+
+case "${1-}" in
+    --version|-v|--help|-h)
+        exec "$OMP_BIN" "$@" ;;
+esac
+
+pid=$(ss -Hltnp "sport = :$PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -n 1)
+if [ -z "$pid" ] || [ "$(cat "/proc/$pid/comm" 2>/dev/null)" != "llama-server" ] || [ ! -O "/proc/$pid" ]; then
+    echo "omp-phi: 127.0.0.1:$PORT is not this user's llama-server; start it first (see ~/llama-phi-cuda/runs/serve)" >&2
+    exit 1
+fi
+
+exec "$OMP_BIN" --profile=llama-phi "$@"

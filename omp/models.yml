@@ -1,0 +1,65 @@
+# llama-phi profile (omp --profile=llama-phi, or the omp-phi wrapper): the model served on
+# this desktop by llama.cpp's llama-server from ~/llama-phi-cuda (repo/scripts/serve.sh):
+# weights in host RAM with the Xeon Phi 7120A keeping ~10.5 GB of their rows through
+# libggml_phi.so, the 3090 Ti holding the KV cache and running prefill (op offload).
+# Loopback only: http://127.0.0.1:8095, one slot, text only. One model is served at a time.
+providers:
+  llama-phi:
+    baseUrl: http://127.0.0.1:8095/v1
+    api: openai-completions
+    auth: none
+    models:
+      # Qwen3.8-27B Q8_0 + its MTP head Q4_0 (-md ... --spec-type draft-mtp -ngld 99, the
+      # head on the GPU); the card keeps 37.5% of every matrix's rows. n_ctx 204800.
+      - id: qwen3.8-27b-q8_0
+        name: Qwen3.8-27B Q8_0 + MTP (desktop, host + Xeon Phi, 3090 Ti prefill/KV)
+        reasoning: true
+        input: [text]
+        # 172032 prompt + 32768 output = 204800 = the server's -c (SERVE_CTX=204800).
+        contextWindow: 172032
+        maxTokens: 32768
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+        # The template accepts reasoning_effort xhigh (default), medium, low ("high" is
+        # mapped to xhigh); low adds "Keep your thinking brief and focused".
+        thinking:
+          mode: effort
+          efforts: [low, medium, xhigh]
+          requiresEffort: true
+        compat:
+          supportsStore: false
+          supportsDeveloperRole: false
+          # The Qwen template raises on a system message past index 0.
+          supportsMultipleSystemMessages: false
+          supportsStrictMode: false
+          maxTokensField: max_tokens
+          supportsUsageInStreaming: true
+          # A long cold prefill must not time out and retry (a retry re-prefills).
+          streamFirstEventTimeoutMs: 3600000
+          streamIdleTimeoutMs: 3600000
+          # chat_template_kwargs {enable_thinking, reasoning_effort}; llama-server passes
+          # them to the template.
+          thinkingFormat: qwen-chat-template
+          qwenTemplateReasoningEffort: true
+          supportsReasoningEffort: true
+      # Qwen3.8-35B-A3B Q8_0 (serve.sh defaults, n_ctx 262144); its template reads
+      # enable_thinking only, no reasoning_effort.
+      - id: qwen3.8-35b-a3b-q8_0
+        name: Qwen3.8-35B-A3B Q8_0 (desktop, host + Xeon Phi, 3090 Ti prefill/KV)
+        reasoning: true
+        input: [text]
+        # 229376 prompt + 32768 output = 262144 = the server's -c.
+        contextWindow: 229376
+        maxTokens: 32768
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+        compat:
+          supportsStore: false
+          supportsDeveloperRole: false
+          supportsMultipleSystemMessages: false
+          supportsStrictMode: false
+          maxTokensField: max_tokens
+          supportsUsageInStreaming: true
+          streamFirstEventTimeoutMs: 3600000
+          streamIdleTimeoutMs: 3600000
+          thinkingFormat: qwen-chat-template
+          qwenTemplateReasoningEffort: false
+          supportsReasoningEffort: false
