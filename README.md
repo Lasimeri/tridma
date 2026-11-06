@@ -23,7 +23,10 @@ card worker. llama.cpp is not modified.
 | [`scripts/pd.sh`](scripts/pd.sh), [`tools/pd.c`](tools/pd.c) | two servers: prefill on the GPU, generation on the card, overlapped across prompts |
 | [`tools/evict.c`](tools/evict.c) | drops a model file from the page cache without root ([evict.md](tools/evict.md)) |
 | [`omp/models.yml`](omp/models.yml), [`scripts/omp-phi`](scripts/omp-phi) | an omp profile's provider for the server, and a launcher that starts omp only when the server holds the port |
-| [`scripts/build.sh`](scripts/build.sh) | builds the four programs into `WORK/runs` |
+| [`docs/router.md`](docs/router.md) | the DMA router: the card's memory backs the card's weight rows (page faults, `K_DOWNLOAD`), host rows pinned, every prompt on the GPU, no disk reads during inference |
+| [`tools/tridma_router.c`](tools/tridma_router.c), [`tools/pin.c`](tools/pin.c), [`tools/nopopulate.c`](tools/nopopulate.c) | the router's LD_PRELOAD library, the residency daemon, the no-populate shim |
+| [`cuda/uffd_check.cu`](cuda/uffd_check.cu) | the premise: CUDA pageable copies served by an unprivileged userfaultfd |
+| [`scripts/build.sh`](scripts/build.sh) | builds the programs into `WORK/runs` (tridma, vpu_dma, pd, evict, pin, libtridma.so) |
 
 ## How the three meet
 

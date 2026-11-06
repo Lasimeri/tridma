@@ -80,3 +80,17 @@ column, 2000 round trips, 120 card threads:
 
 Build: `nvcc -O3 -arch=sm_86 -std=c++17 -Xcompiler -Wall,-Wextra
 -I<Intel-Phi-AVX-512-C>/card/vpu -o vpu_dma vpu_dma.cu`.
+
+## The other modes
+
+- `-F`: `VPU_K_FREE` with `a_id` 0 from the GPU: every resident tensor on the card
+  dropped (what `scripts/serve.sh stop` runs).
+- `-D N` (2026-11-06): after the upload, the resident matrix back to the window
+  `N` times with `VPU_K_DOWNLOAD` (kernel 32, the card's DMA), the bytes compared
+  with the uploaded matrix, then the window to the GPU by the copy engine `N`
+  times. Measured on the 7120A, 32 MiB: identical bytes, 0.81 GB/s card to window
+  (41.1 ms per download), 13.40 GB/s window to GPU. This is the transfer
+  `tools/tridma_router.c` makes on a page fault.
+
+Builds against the worker headers that have `VPU_K_DOWNLOAD` and `VPU_OFF_LOCK`
+(the llama-phi patch).

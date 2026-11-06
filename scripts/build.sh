@@ -21,6 +21,9 @@ flags=(-O3 -arch="$arch" -std=c++17 -Xcompiler -Wall,-Wextra -I"$vpu")
 "$nvcc" "${flags[@]}" -o "$work/runs/cuda/vpu_dma" "$here/cuda/vpu_dma.cu"
 gcc -O2 -Wall -Wextra -Wpedantic -std=gnu11 -pthread -o "$work/runs/pd/bin/pd" "$here/tools/pd.c"
 gcc -O2 -Wall -Wextra -o "$work/runs/tools/evict" "$here/tools/evict.c"
-for b in tri/tridma cuda/vpu_dma pd/bin/pd tools/evict; do
+mkdir -p "$work/runs/serve"
+gcc -O2 -Wall -Wextra -Wpedantic -std=gnu11 -o "$work/runs/serve/pin" "$here/tools/pin.c" -lm
+gcc -O2 -Wall -Wextra -shared -fPIC -I"$vpu" -o "$work/runs/serve/libtridma.so" "$here/tools/tridma_router.c" -ldl -lpthread
+for b in tri/tridma cuda/vpu_dma pd/bin/pd tools/evict serve/pin serve/libtridma.so; do
     printf '%-28s %8s bytes\n' "runs/$b" "$(wc -c < "$work/runs/$b")"
 done

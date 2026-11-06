@@ -238,10 +238,11 @@ static void call(unsigned char *dwin, const vpu_matmul &mm, uint32_t kernel, uin
     call_out o;
     CK(cudaMemcpy(&o, dout, sizeof o, cudaMemcpyDeviceToHost));
     if (o.status != VPU_OK) {
-        fprintf(stderr, "vpu_dma: %s (request %llu): status %d%s\n", what, (unsigned long long) o.seq, o.status,
-                o.status == -100 ? " (no answer within 10 s)" : "");
+        fprintf(stderr, "vpu_dma: %s (request %llu): status %d%s\n", what ? what : "request", (unsigned long long) o.seq,
+                o.status, o.status == -100 ? " (no answer within 10 s)" : "");
         exit(1);
     }
+    if (!what) return;   // a repeated request: only failures print
     printf("%-8s seq %llu: wait %.3f ms, card total %.3f ms (pull %.3f, compute %.3f, push %.3f), %d threads\n",
            what, (unsigned long long) o.seq, o.wait_ns / 1e6, o.total_ns / 1e6, o.pull_ns / 1e6, o.compute_ns / 1e6,
            o.push_ns / 1e6, o.threads);
@@ -272,10 +273,11 @@ static void pct(const char *what, std::vector<uint64_t> v) {
 
 int main(int argc, char **argv) {
     uint64_t m = 4096, k = 2048, n = 1, id = 0x4750555F444D41ull;   // "GPU_DMA"
-    int reps = 2000, threads = 120, free_all = 0, opt;
-    while ((opt = getopt(argc, argv, "m:k:n:r:t:F")) != -1) {
+    int reps = 2000, threads = 120, free_all = 0, dl_reps = 0, opt;
+    while ((opt = getopt(argc, argv, "m:k:n:r:t:FD:")) != -1) {
         switch (opt) {
         case 'F': free_all = 1; break;
+        case 'D': dl_reps = (int) num(optarg, 'D'); break;
         case 'm': m = num(optarg, 'm'); break;
         case 'k': k = num(optarg, 'k'); break;
         case 'n': n = num(optarg, 'n'); break;
@@ -350,6 +352,35 @@ int main(int argc, char **argv) {
     vpu_matmul mm = {};
     mm.a_id = id; mm.a_off = OFF_A; mm.bytes = round_block(m * nb_a);
     call(dwin, mm, VPU_K_UPLOAD, threads, dout, "upload");
+
+    if (dl_reps > 0) {   // -D N: the resident matrix back to the window N times (VPU_K_DOWNLOAD), checked, timed
+        const uint64_t bytes = round_block(m * nb_a);
+        if (bytes > B_MAX) { fprintf(stderr, "vpu_dma: -D wants the matrix within %llu bytes\n", (unsigned long long) B_MAX); return 2; }
+        vpu_matmul dl = {};
+        dl.a_id = id; dl.a_off = 0; dl.bytes = bytes; dl.d_off = OFF_B;
+        memset(win + OFF_B, 0, bytes);
+        timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (int r = 0; r < dl_reps; r++) call(dwin, dl, VPU_K_DOWNLOAD, threads, dout, r ? NULL : "download");
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        const double s = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) * 1e-9;
+        const int same = memcmp(win + OFF_B, win + OFF_A, m * nb_a) == 0;
+        printf("download %d x %.1f MiB: %.3f s, %.2f GB/s card -> window, bytes %s the uploaded matrix\n", dl_reps,
+               bytes / 1048576.0, s, dl_reps * (double) bytes / s / 1e9, same ? "IDENTICAL to" : "DIFFER from");
+        float *gd;
+        CK(cudaMalloc(&gd, bytes));
+        CK(cudaEventRecord(e0));
+        for (int r = 0; r < dl_reps; r++) CK(cudaMemcpy(gd, win + OFF_B, bytes, cudaMemcpyHostToDevice));
+        CK(cudaEventRecord(e1)); CK(cudaEventSynchronize(e1));
+        printf("window -> GPU (copy engine): %.2f GB/s\n", dl_reps * (double) bytes / secs(e0, e1) / 1e9);
+        CK(cudaFree(gd));
+        mm = vpu_matmul{};
+        mm.a_id = id;
+        call(dwin, mm, VPU_K_FREE, threads, dout, "free");
+        CK(cudaHostUnregister(win));
+        munmap(win, WIN_LEN);
+        return same ? 0 : 1;
+    }
 
     mm = vpu_matmul{};
     mm.a_id = id; mm.a_type = VPU_MM_F32; mm.b_type = 0;
