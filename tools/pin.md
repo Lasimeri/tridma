@@ -48,3 +48,18 @@ still came from the disk. The fix is to take the backend's actual split set
 instead of assuming every matrix is split.
 
 Build: `gcc -O2 -Wall -Wextra -Wpedantic -std=gnu11 -o pin pin.c -lm`.
+
+## Modes for other layouts (2026-11-06)
+
+- `PIN_ONLY=prefix`: only the tensors whose names start with `prefix` are locked,
+  whole (and the header); nothing is dropped. Used for `token_embd` when every
+  matrix lives on the GPU or the card.
+- `PIN_LAYERS=lo-hi`: only the matrices of layers `lo` to `hi` are split host/card
+  at `SHARE` (host rows locked, card rows dropped); the matrices of every other
+  layer and `output.weight` are dropped from the page cache whole (they are in
+  VRAM); `token_embd` and the norms are locked whole. For the layout with the
+  last layers on the GPU: `PIN_LAYERS=0-31 pin MODEL 0.937` locked 2.17 GB and
+  dropped 26.87 GB, and a request's disk reads fell from 368 MiB to 140 KiB.
+- `SHARE 0` locks a whole file, its `blk.N` with `nextn` tensors included: in an
+  MTP draft file that block is the draft itself (1.37 GB, 18 tensors), needed in
+  host RAM when the draft runs on the host (`-ngld 0`).

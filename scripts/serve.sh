@@ -23,6 +23,7 @@ port=${SERVE_PORT:-8095}
 ctx=${SERVE_CTX:-262144}
 alias=${SERVE_ALIAS:-qwen3.8-35b-a3b-q8_0}
 read -r -a extra <<< "${SERVE_ARGS:-}"   # extra llama-server arguments, e.g. a draft model
+read -r -a place <<< "${SERVE_PLACE:--ngl 99 -ot .*=CPU}"   # where the weights go (default: every weight on the host side)
 runs=$work/runs/serve
 bin=$work/llama.cpp/build-native-cuda/bin/llama-server
 vpu_dma=${VPU_DMA:-$work/runs/cuda/vpu_dma}
@@ -64,7 +65,7 @@ case "$cmd" in
             PHI_GGML_CARDS=${PHI_GGML_CARDS:-0} PHI_GGML_THREADS=120 \
             PHI_GGML_CARD_BYTES=${CARD_BYTES:-10500000000} PHI_GGML_OFFLOAD=1 \
             PHI_GGML_HOST_THREADS=${HOST_THREADS:-14} PHI_GGML_TG_ONLY=${TG_ONLY:-31} \
-            nohup "$bin" -m "$model" --alias "$alias" -ngl 99 -ot ".*=CPU" \
+            nohup "$bin" -m "$model" --alias "$alias" "${place[@]}" \
                 -t "${HOST_THREADS:-14}" -c "$ctx" -np 1 -b 2048 -ub 2048 --fit off --jinja \
                 --host 127.0.0.1 --port "$port" "${extra[@]}" > "$log" 2>&1 &
         echo $! > "$runs/server.pid"

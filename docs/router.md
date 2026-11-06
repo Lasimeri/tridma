@@ -105,7 +105,7 @@ Supporting measurements:
 
 ## Limits and what is next
 
-- **The card's DMA out is the bound.** 0.71 to 0.81 GB/s: `push_data` copies each
+- **The card's DMA out was the bound** (fixed later the same day, below: 3.32 GB/s). 0.71 to 0.81 GB/s: `push_data` copied each
   960 KiB piece into the landing area with the cores, then posts one engine copy
   and waits, serially. DMA straight from the resident huge pages (physically
   contiguous 2 MiB pages whose frames the worker reads) with several descriptors
@@ -117,3 +117,61 @@ Supporting measurements:
   split set.
 - Generation (5.0 to 5.6 tok/s) is bound by the host's 14 threads reading their
   15 GB share each token; the card's share and the DMA are not the limit there.
+
+## Later the same day
+
+### The card's DMA out, 4.1x
+
+Sampling the card's CPUs during a prefill showed one of them at 100 % and the
+rest under 50 %: the worker's dispatcher copied every piece of a download into
+the DMA landing area with one core while the 120-thread matrix pool idled. The
+DMA path of `push_data` now fills the landing area with `copy_pool` across the
+request's threads (`map_threads`; the router asks for 120). Worker md5
+`01ed795a26049e93ede3fe1b539bd769`.
+
+| `vpu_dma -D 10`, 32 MiB | Before | After |
+|---|---|---|
+| card -> window | 0.81 GB/s (41.1 ms each) | **3.32 GB/s** (11.06 ms each) |
+| window -> GPU | 13.40 GB/s | 13.41 GB/s |
+
+### The inverted layout: weights on the GPU and the card, KV and MTP on the host
+
+`scripts/serve.sh` takes the weight placement from `SERVE_PLACE` (default
+`-ngl 99 -ot .*=CPU`, the layout above). With the last 32 layers and the output
+matrix on the GPU and the first 32 on the card:
+
+```
+PIN_LAYERS=0-31 ./pin $M/Qwen3.8-27B-Q8_0.gguf 0.937 &      # the host's 6.2 % of layers 0-31, token_embd
+./pin $M/MTP/mtp-Qwen3.8-27B-Q4_0.gguf 0 &                   # the draft, whole: it runs on the host
+LD_PRELOAD=$R/libtridma.so PHI_GGML_ALL_ROWS=1 TG_ONLY=31 PHI_VPU_HUGEPAGES=6437 CARD_BYTES=13100000000 \
+SERVE_ALIAS=qwen3.8-27b-q8_0 SERVE_CTX=204800 \
+SERVE_PLACE='-ngl 32 -ot ^output\.weight$=CUDA0 -nkvo' \
+SERVE_ARGS="-md $M/MTP/mtp-Qwen3.8-27B-Q4_0.gguf --spec-type draft-mtp -ngld 0" \
+  bash $W/repo/scripts/serve.sh $W $M/Qwen3.8-27B-Q8_0.gguf start
+```
+
+The output override is anchored: `output\.weight` alone also matches every
+layer's `attn_output.weight`. `PHI_GGML_ALL_ROWS=1` lets the card keep every row;
+its 13.1 GB budget covered 93.8 % of the 13.8 GB offered, the host keeping 6.2 %.
+
+| Placement (llama.cpp's load lines) | Where | MiB |
+|---|---|---|
+| layers 32-63 + `output.weight` | GPU | 13,283.69 |
+| layers 0-31 | card 93.8 % of every row, host 6.2 % | 14,407.28 mapped |
+| KV cache (204,800 tokens) / recurrent state | host | 12,800.00 / 598.50 |
+| MTP draft weights / its KV cache | host | 1,295.71 / 800.00 |
+
+| 1392-token prompt | Prefill | Generation | MTP accepted | Disk reads |
+|---|---|---|---|---|
+| inverted, single-core landing copy | 52.46 tok/s | 5.85 tok/s | 21/27 | 368 MiB (before `PIN_LAYERS`) |
+| inverted, pool landing copy | **101.84 tok/s** (13.67 s) | 5.36 tok/s | 19/33 | 27.5 MiB (first request after a restart) |
+
+With the pool copy the router fetched 8.13 GB at 1.99 GB/s (0.72 before), the GPU
+peaked at 92 % SM, host iowait stayed at 0. Short requests after `PIN_LAYERS`
+and the whole-file draft pin read 140 KiB from the disk, generation 6.48 tok/s.
+
+Limits of this layout: the host's KV cache leaves about 1.1 GB of RAM available
+on a 32 GB host (a 131,072-token context frees 4.6 GB); prompts over 31 tokens
+always go to the GPU, so even a short one makes the card return its 12.9 GB (a
+38-token prompt prefilled at 1.89 tok/s before the pool copy); generation is
+bound by the card reading its 12.9 GB share per token.

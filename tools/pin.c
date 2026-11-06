@@ -126,6 +126,10 @@ int main(int argc, char **argv) {
     // ranges to lock (host) and to drop (card), page aligned inward for the drop,
     // outward for the lock (a shared edge page stays locked: the host's)
     const long pg = sysconf(_SC_PAGESIZE);
+    const char *only = getenv("PIN_ONLY");
+    long lay_lo = -1, lay_hi = -1;   // PIN_LAYERS=lo-hi: only those layers are split host/card; the rest are on the GPU
+    if (getenv("PIN_LAYERS") && sscanf(getenv("PIN_LAYERS"), "%ld-%ld", &lay_lo, &lay_hi) != 2) { fprintf(stderr, "pin: PIN_LAYERS is lo-hi\n"); return 2; }
+    const size_t only_len = only ? strlen(only) : 0;
     uint64_t lock_b = 0, drop_b = 0, split_n = 0, whole_n = 0;
     unsigned char (*act)[1] = NULL;
     (void) act;
@@ -150,11 +154,20 @@ int main(int argc, char **argv) {
             return 1;
         }
         const uint64_t a = data + ti[i].off, bytes = ti[i].nel / be * bs;
+        if (only_len) {   // PIN_ONLY=prefix: those tensors locked whole, nothing else touched
+            if (ti[i].nl >= only_len && !memcmp(ti[i].name, only, only_len)) { rgs[nr++] = (struct rg){a, a + bytes, 1}; lock_b += bytes; whole_n++; }
+            continue;
+        }
         const int is_embd = ti[i].nl >= 10 && !memcmp(ti[i].name, "token_embd", 10);
-        if (mtp_len && ti[i].nl > mtp_len && !memcmp(ti[i].name, mtp_prefix, mtp_len)) {
+        if (f > 0 && mtp_len && ti[i].nl > mtp_len && !memcmp(ti[i].name, mtp_prefix, mtp_len)) {   // share 0 locks a draft model whole
             rgs[nr++] = (struct rg){a, a + bytes, 0};
             drop_b += bytes; mtp_b += bytes;
             continue;
+        }
+        if (lay_lo >= 0 && ti[i].nd >= 2 && ti[i].ne1 >= 2 && !is_embd) {   // a matrix outside the card layers is on the GPU: out of the page cache
+            long lay = -1;
+            if (ti[i].nl > 4 && !memcmp(ti[i].name, "blk.", 4)) lay = strtol((const char *) ti[i].name + 4, NULL, 10);
+            if (lay < lay_lo || lay > lay_hi) { rgs[nr++] = (struct rg){a, a + bytes, 0}; drop_b += bytes; continue; }
         }
         if (ti[i].nd < 2 || ti[i].ne1 < 2 || is_embd || f == 0) {   // never on the card
             rgs[nr++] = (struct rg){a, a + bytes, 1};
